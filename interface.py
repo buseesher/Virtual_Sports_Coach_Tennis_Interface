@@ -1,9 +1,9 @@
 import sys
 import time
 import cv2
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QTimer, Qt, QPoint
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor
-from PyQt5.QtWidgets import QTableWidget, QPushButton, QSizePolicy, QTableWidgetItem, QHeaderView, QApplication, QMainWindow, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView
+from PyQt5.QtWidgets import QTableWidget, QPushButton, QMenu, QOpenGLWidget, QSizePolicy, QTableWidgetItem, QHeaderView, QApplication, QMainWindow, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView
 import pyzed.sl as sl
 import  ogl_viewer.viewer as gl 
 import cv_viewer.tracking_viewer as cv_viewer
@@ -16,7 +16,6 @@ def quaternion_to_euler(x, y, z, w):
     # return pitch(y), roll (x), yaw (z) sırasına göre çevrildi. Yaygın kullanım
     rot = Rotation.from_quat([[x,y,z,w]])
     rot_euler = rot.as_euler('zyx', degrees=True)
-    
     # print(rot_euler)
     return  rot_euler[0][2], rot_euler[0][1], rot_euler[0][0]
 
@@ -28,6 +27,10 @@ class CameraApp(QMainWindow):
         
         # Pencere başlığı
         self.setWindowTitle("TÜBİTAK 1001 - Teniste Yapay Zeka Destekli Sanal Spor Koçu")
+
+        # İkinci SVO görüntüsünün gösterilip gösterilmeyeceğini kontrol eden değişken
+        self.show_second_view = False  # Başlangıçta sadece ilk görüntü gösterilecek
+        
 
         # Create a horizontal layout
         #self.horizontal_layout = QHBoxLayout(self.central_widget)
@@ -43,7 +46,12 @@ class CameraApp(QMainWindow):
 
         self.image_label_2 = QLabel(self)
         self.image_label_2.setFixedSize(720, 540)  
-        self.image_label_2.move(640, -103)  # İkinci SVO görüntüsünün konumu (niye 0 değil de eksideyken konumu eşitleniyor araştır)
+        self.image_label_2.move(570, -103)  # İkinci SVO görüntüsünün konumu (niye 0 değil de eksideyken konumu eşitleniyor araştır)
+
+        self.image_label.setText("Video Alanı")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label_2.setText("Video Alanı")
+        self.image_label_2.setAlignment(Qt.AlignCenter)
 
         # Create a table to display pitch, roll, and yaw values
         self.table_widget = QTableWidget(self)
@@ -57,7 +65,7 @@ class CameraApp(QMainWindow):
         self.table_widget.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed) # Set the resize mode of the first column to Fixed
         self.table_widget.setColumnWidth(0, 50)  # Set the width of the 'Index' column to 50 pixels
     
-        # Vücut takibi için parametrelerin nesne oluşturulması
+        # Vücut takibi için parametre nesne oluşturulması
         self.body_param = sl.BodyTrackingParameters()
         self.body_param.enable_tracking = True
         self.body_param.enable_body_fitting = True
@@ -112,10 +120,12 @@ class CameraApp(QMainWindow):
                          self.body_param.enable_tracking, 
                          self.body_param.body_format
                          )
+        
+        self.playing = False  # Videoların oynatılıp oynatılmadığını takip eden değişken
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_camera_view)
-        self.timer.start(30) #Zamanlayıcı, 30 milisaniye aralıklarla update camera view fonskiyonu çağrıldı
+        #self.timer.start(30) #Zamanlayıcı, 30 milisaniye aralıklarla update camera view fonskiyonu çağrıldı
         # Sık güncellemeler yapılması gereken durumlarda kullanılır,gerçek zamanlı görüntü işleme veya animasyonlar gibi. 
         # amaç akıcı bir kullanıcı deneyimi sağlamaktır.
 
@@ -125,56 +135,69 @@ class CameraApp(QMainWindow):
         #self.central_widget.move(0, 0)  # Sol üst köşeye yaslamak içindi,etkisiz
 
         # Butonları oluşturma ve konumlandırma
-        self.play_svo_button = QPushButton('Play SVO', self)
-        self.play_svo_button.move(1810, 50)  # Butonun konumu ayarlanır
-        self.play_svo_button.clicked.connect(self.play_svo)  # SVO oynatma fonksiyonuna bağlanır
+        self.play_button = QPushButton('Play', self)
+        self.play_button.move(1810, 50)  # Butonun konumu ayarlanır
+        self.play_button.clicked.connect(self.show_play_options)  # Play butonuna tıklandığında açılır menü gösterilir
+        # Play options menüsünü oluştur
+        self.play_menu = QMenu(self)
+        self.action_play_svo = self.play_menu.addAction('Play SVO', self.play_svo)
+        self.action_play_zed = self.play_menu.addAction('Play ZED Camera', self.play_zed)
 
-        self.play_zed_button = QPushButton('Play ZED Camera', self)
-        self.play_zed_button.move(1810, 100)  # Butonun konumu ayarlanır
-        self.play_zed_button.clicked.connect(self.play_zed)  # ZED kamera oynatma fonksiyonuna bağlanır
+        # "angles" resminin QLabel'a yüklenmesi
+        image_path = "C:\\Users\\Buse\\Desktop\\angles.jpeg"
+        image_pixmap = QPixmap(image_path)
+        new_height = 480  # Yeni yükseklik değeri belirlenir
+        aspect_ratio = image_pixmap.width() / image_pixmap.height()
+        new_width = int(new_height * aspect_ratio)  # En-boy oranını koruyarak yeni genişlik hesaplanır
+        scaled_pixmap = image_pixmap.scaled(new_width, new_height, Qt.KeepAspectRatio)
+        self.image_label.setPixmap(scaled_pixmap)
+        self.image_label.setFixedSize(new_width, new_height)  # QLabel'ın boyutu sabitlenir
+        self.image_label.move(1280, 450)  # QLabel'ın konumu ayarlanır
+
+    def show_play_options(self):
+        # Play butonuna tıklandığında açılır menüyü göster
+        self.play_menu.exec_(self.play_button.mapToGlobal(QPoint(0, 0)))
+
 
     # SVO oynatma fonksiyonu for button
     def play_svo(self):
         # SVO dosyasından görüntü oynatma işlemleri buraya eklenir
-        # Örneğin, self.init_params.svo_input_filename özelliğini SVO dosyanızın yoluna ayarlayarak
-        # ve ZED kamerayı bu parametrelerle yeniden başlatarak 
-        pass
+        self.playing = True  # Videoların oynatılmasını başlat
+        self.timer.start(30)  # Timer'ı başlatarak update_camera_view metodunu periyodik olarak çağır
+    
 
-    # ZED kamera oynatma fonksiyonu
+    # ZED kamera oynatma fonksiyonu1
     def play_zed(self):
-        # SVO oynatmayı durdur
-        self.zed.close()
+        # Mevcut ZED kamera nesnesini kapat
+        self.zed_2.close()
+        
+        # Yeni InitParameters nesnesi oluştur ve kamera ayarlarını yap
+        self.init_params_2 = sl.InitParameters()
+        self.init_params_2.camera_resolution = sl.RESOLUTION.HD720
+        self.init_params_2.depth_mode = sl.DEPTH_MODE.ULTRA
+        self.init_params_2.coordinate_units = sl.UNIT.METER
+        self.init_params_2.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
+        
+        # Yeni parametrelerle ZED kamerayı yeniden aç
+        if self.zed_2.open(self.init_params_2) != sl.ERROR_CODE.SUCCESS:
+            exit(1)
+        
+        # Görüntü akışını başlat
+        self.playing = True
+        # update_camera_view metodunu periyodik olarak çağırmaya başla
+        self.show_second_view = True  # İkinci görüntüyü göstermek için True yap
+        self.timer.start(30)
 
     #Fonksiyon belirli aralıklarla çağrılmaKTA
     #ZED kameradan görüntü ve vücut takip verilerini alıp işlemek için kullanılır
     def update_camera_view(self):
+        if not self.playing:
+            return  # Eğer playing False ise, bu fonksiyonu erken terk et
         if self.zed.grab() == sl.ERROR_CODE.SUCCESS: #kameradan yeni bir görüntü yakalamaya çalışır 
             #Bu metodun başarılı olup olmadığını kontrol eder (sl.ERROR_CODE.SUCCESS).
             image = sl.Mat() #Başarılı olursa, sl.Mat() kullanılarak yeni bir görüntü matrisi oluşturulur ve
             self.zed.retrieve_image(image, sl.VIEW.LEFT, sl.MEM.CPU) #self.zed.retrieve_image(image, sl.VIEW.LEFT, sl.MEM.CPU) 
             #ile yakalanan görüntüyü bu matrise kopyalar. Görüntü, kameranın sol gözünden alınır ve CPU belleğinde saklanır
-            
-            #görüntü işleme için: yoruma alınmış satırlar
-            #image_left_ocv = image.get_data()
-            # Gürültü azaltma
-            #denoised_image = cv2.fastNlMeansDenoisingColored(image_left_ocv, None, 3, 3, 7, 15)
-            #(image_left_ocv, None, 3, 3, 7, 15) -> ilk 3:Renk bileşenleri için filtreleme gücünü belirleyen parametre
-            # ne kadar büyük olursa, gürültüdeki filtreleme o kadar güçlü olur, çok yüksek değerler görüntünün aşırı yumuşaması ve detay kaybı yaratır
-            # ikinci 3: önceki parametre gibi ama sadece renk bileşenleri içn.biri gri tonlamalı (luminance) bileşenler için, diğeri renk (chrominance) bileşenleri için
-            # burada her iki bileşen için de aynı değerler kullanılmıştır
-            # 7 yazan (template window size): Arama penceresinin boyutunu belirler. Bu değer, algoritmanın bir pikselin değerini tahmin etmek için kullandığı komşu piksellerin boyutunu ifade eder.
-            #Genellikle 7 veya 21 gibi tek sayılar kullanılır. Değer arttıkça, gürültü azaltma etkisi artar fakat işlem süresi de uzar.
-            # 15 yazan yer (search window size): Arama penceresinin boyutunu belirler. Bu pencere içindeki tüm pikseller, merkezi piksel değerinin tahmini için kullanılır.
-            # Bu değer ne kadar büyük olursa, daha geniş bir alandaki pikseller filtrelemeye katılır, bu da teorikte daha iyi gürültü 
-            #azaltma sağlar ancak işlem süresini artırır ve bazen görüntüde bulanıklığa neden olabilir.
-            
-
-            # Görüntü netleştirme
-           # kernel_sharpening = np.array([[-1, -1, -1], 
-           #                               [-1, 9, -1],
-           #                               [-1, -1, -1]])
-           # sharpened_image = cv2.filter2D(denoised_image, -1, kernel_sharpening)
-
             bodies = sl.Bodies() # algılanan bedenlerin bilgisini tutan nesne
             self.zed.retrieve_bodies(bodies, self.body_runtime_param) 
             # method, anlık görüntüdeki vücutları alıp bodies nesnesine kaydeder
@@ -255,26 +278,7 @@ class CameraApp(QMainWindow):
                 #                  3 * resized_image.shape[1], QImage.Format_RGB888)
                 #pixmap_resized = QPixmap.fromImage(qImg_resized)
                 #self.image_label.setPixmap(pixmap_resized)
-
-                # Display the image on the right side
-                image_path = "C:\\Users\\Buse\\Desktop\\angles.jpeg"
-                image_pixmap = QPixmap(image_path) 
-                #scaled_pixmap = image_pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio)
-                #self.image_label.setPixmap(scaled_pixmap)
-
-                new_height = 480 # Yeni yükseklik değeri
-                # Calculate the new size while maintaining the aspect ratio (en-boy oranı)
-                aspect_ratio = image_pixmap.width() / image_pixmap.height()
-                new_width = int(new_height * aspect_ratio)  # Yeni genişlik, en-boy oranını koruyacak şekilde hesaplanır
-                #new_width = 430  # Set the desired width
-                #new_height = int(new_width / aspect_ratio)
-                
-                scaled_pixmap = image_pixmap.scaled(new_width, new_height, Qt.KeepAspectRatio)
-                self.image_label.setPixmap(scaled_pixmap)
-
-                # Adjust the position of the angles image (resmin kaydırılması)
-                self.image_label.move(1280, 400)
-
+            if self.show_second_view:  # İkinci görüntünün gösterilip gösterilmeyeceğini kontrol et
                 # İkinci SVO dosyasından görüntü al
                 if self.zed_2.grab() == sl.ERROR_CODE.SUCCESS:
                     image_2 = sl.Mat()
@@ -325,8 +329,3 @@ if __name__ == '__main__':
     mainWindow = CameraApp()
     mainWindow.show() 
     sys.exit(app.exec_())
-
-
-
-
-
